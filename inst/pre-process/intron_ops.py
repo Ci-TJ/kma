@@ -22,6 +22,12 @@ import pysam
 from gtf_parser import Transcript
 
 def print_trans_names(trans):
+    """
+    trans:
+    ENSG00000223972.5
+        ENST00000456328.2
+        ENST00000450305.2
+    """
     if len(trans) == 0:
         return
 
@@ -30,20 +36,23 @@ def print_trans_names(trans):
         print '\t', t.transcript_id
 
 def reduce_to_gene(trans_list, process_by_gene = None):
-    """ Performs 'process_by_gene' on a list of transcripts which all have the
+    """ 
+    Performs 'process_by_gene' on a list of transcripts which all have the
     same gene names. returns the gene -> transcript mapping and returns the gene
     -> result mapping in a tuple. *IMPORTANT* Assumes that transcripts are
-    sorted by position"""
+    sorted by position
+    """
+    ##“把 transcript 列表按 gene_id 分组，并对每个基因调用 process_by_gene()。返回 gene→transcript 和 gene→结果 的两个字典。注意：transcript 列表必须事先按位置排序。”
 
     cur_gene = None
 
-    ret_dict = {}
-    gene_to_trans = {}
+    ret_dict = {} ## 存储 gene → process_by_gene(transcripts) 的结果
+    gene_to_trans = {} ## 存储 gene → transcript 列表 的映射
 
     # makes no assumption about overlaps
     for trans in trans_list:
         cur_gene = trans.gene_id
-        gene_list = gene_to_trans.get(cur_gene, [])
+        gene_list = gene_to_trans.get(cur_gene, []) ## 获取该基因已有的 transcript 列表，如果没有则返回空列表
         # XXX: need to decide what best design is here
         # if len(gene_list) > 0:
             # if gene_list[0].refname != trans.refname:
@@ -105,7 +114,7 @@ def get_introns(trans, extend = 0):
     """ Given a transcript, return a set of introns with (start, stop)
     locations. If extend > 0, then extends the intron on the left and right
     side.  """
-
+    ## 给定一个 transcript，返回它的 intron 列表（每个 intron 是一个区间） # extend > 0 时，会在 intron 左右两侧各延伸 extend 个碱基；文章中默认延伸25nt！！！
     if extend < 0:
         raise Exception("Non-sensical value for extend (must be >= 0)")
 
@@ -120,12 +129,12 @@ def get_introns(trans, extend = 0):
 def intron_all_trans(trans_list):
     """ Given a list of transcripts, return a sorted list of introns that every
     transcript shares. """
-
+    ## 给定一个 transcript 列表，返回所有 transcript 共同拥有的 intron（交集） # 也就是说：找出所有转录本共享的 intron 区间
     if len(trans_list) == 0:
         return []
     all_introns = map(get_introns, trans_list)
     print all_introns
-    # TODO: fixme
+    # TODO: fixme ## 下面这段代码其实是错误的（KMA 作者自己也标注了 fixme） # 因为 introns.coords 并不是标准属性，但我们保持原样注释
     all_introns = [introns.coords for introns in all_introns]
     all_introns = [set(introns) for introns in all_introns]
     all_introns = list(reduce(set.intersection, all_introns))
@@ -145,7 +154,9 @@ def intron_intersection(i1, i2):
 def transcript_union(trans_list):
     """ Given a list of transcripts, return a transcript that is the 'union' of
     them. That is, take the union overlap region of every exon."""
+    # 给定多个 transcript，返回一个新的 transcript， # 其 exon 是所有 transcript 的 exon 的“并集”（union）。 # 注意：这里的 union 是“区间合并”，不是数学意义上的集合并集。
 
+    ## 取出所有 transcript 的所有 exon，形成一个平铺列表
     all_exons = [exon for trans in trans_list for exon in trans.exons]
     all_exons = sorted(list(set(all_exons)))
 
