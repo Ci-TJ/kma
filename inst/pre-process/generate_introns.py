@@ -97,13 +97,13 @@ def main():
         sys.exit(1)
 
     logging.info('Reading in GTF: {0}'.format(args.gtf))
-    gtf_dict = gtf_parser.gtf_parse(args.gtf)
-    gtf_list = gtf_dict.values()
+    gtf_dict = gtf_parser.gtf_parse(args.gtf) ## 解析 GTF → transcript_id → Transcript 对象 gtf_list = gtf_dict.values() 
+    gtf_list = gtf_dict.values() ## 转成 Transcript 对象列表
 
     logging.info('Grouping transcripts by gene')
-    g2t = intron_ops.reduce_to_gene(gtf_list)
-
-    g2i = intron_ops.discard_overlapping_introns(gtf_list, args.extend)
+    g2t = intron_ops.reduce_to_gene(gtf_list) ## 按 gene 分组 transcript → gene → [Transcript]
+    
+    g2i = intron_ops.discard_overlapping_introns(gtf_list, args.extend) ## 计算每个 gene 的 introns，并过滤跨基因重叠的 introns
 
     bed_out = args.out + os.sep + "introns.bed"
 
@@ -122,6 +122,7 @@ def main():
             for intron in g2i[gene]:
                 # for now, output the gene id as the name.. need to come up with
                 # better way to do this later for better housekeeping
+                ## intron_list 是 BED 格式的四列
                 intron_list = [intron.refname, str(intron[0]), str(intron[1]),
                                intron.to_string_noext() + ";" + gene]
                 i2g[str(intron)] = gene
@@ -131,7 +132,7 @@ def main():
     i2t = {}
     for gene, introns in g2i.iteritems():
         trans = g2t[gene]
-        intron_compat = intron_ops.intron_trans_compat(introns, trans)
+        intron_compat = intron_ops.intron_trans_compat(introns, trans) ## 计算 intron 与哪些 transcript 兼容（被完整覆盖）
         for intron, tlist in intron_compat.iteritems():
             i2t[intron] = tlist
 
@@ -148,7 +149,7 @@ def main():
 
     introns_out = args.out + os.sep + "introns.fa"
     # read BED file and FASTA file, write out FASTA file
-    bed_to_introns(bed_out, args.genome, introns_out)
+    bed_to_introns(bed_out, args.genome, introns_out) ## 从 BED 和 genome FASTA 提取 intron 序列 → introns.fa
 
 if __name__ == '__main__':
     main()
