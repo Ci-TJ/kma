@@ -59,7 +59,7 @@ def readXprs(fileName, colName):
     colName - a column name (i.e. fpkm, eff_counts, etc...)
     Returns: a dictionary that contains the fpkm
     """
-    fileHandle = open(fileName, "r")
+    fileHandle = open(fileName, "r") ## 打开 eXpress 的 results.xprs 文件
     firstLine = fileHandle.readline()
     firstLine = firstLine.split()
 
@@ -75,7 +75,7 @@ def readXprs(fileName, colName):
         return
 
     xprsDict = {}
-    lower_thresh = 5.0/1000.0
+    lower_thresh = 5.0/1000.0 ## rate 的下限阈值（0.005
     for line in fileHandle:
         line = line.split()
         if float(line[4]) != 0:
@@ -95,21 +95,24 @@ def readXprs(fileName, colName):
 
 # @profile
 def computeZeroRegions(trans, rate):
+    ## trans: 一个 dict，key 是 read 的起始位置（整数），value 不重要 # 这些 key 表示“有 read 覆盖的位置” # rate: 一个速率参数（来自 eXpress 的 expected_count / effective_length） 
+    # # 目的： # 找出“没有 read 覆盖的连续区域”（zero-coverage regions） # 并计算每个 zero-region 的 log 概率： -rate * L # 其中 L 是 zero-region 的长度 # # 这是 KMA 用于“零覆盖区间统计”的 QC 模块
     # utrans = unique(trans)
     utrans = trans.keys()
     utrans.sort()
     # utrans.sort()
     ps = []
     ranges = []
-    L = utrans[0] - 1
+    L = utrans[0] - 1 ## 第一个 read 之前的空白长度（从 1 到第一个 read-1）
     # if L >= 1:
     # print trans
     if L > 1:
+        ## 如果前面有空白区间
         # ps.append( math.exp(-rate*L) )
-        ps.append( -rate*L ) # taking the log
+        ps.append( -rate*L ) # taking the log # 使用 log 概率：log P = -rate * L
         ranges.append( (1, utrans[0] - 1) )
     for i in xrange(len(utrans) - 1):
-        L = utrans[i + 1] - utrans[i] - 1
+        L = utrans[i + 1] - utrans[i] - 1 ## 相邻 read 之间的空白长度
         # if L >= 1:
         if L > 1:
             # ps.append( math.exp(-rate*L) )
@@ -121,6 +124,9 @@ def computeZeroRegions(trans, rate):
     return (ranges, ps)
 
 def computeStartingPos(xprsResults, bamFile):
+    ## xprsResults: 来自 readXprs() 的表达量字典（但这里完全没用到） # bamFile: pysam.AlignmentFile 对象 
+    # # 目的： # 为每条染色体（或 contig）收集所有 read 的起始位置 # 返回一个列表：每个元素是一个 read 起始位置列表 
+    # # trans[tid] = [pos1, pos2, pos3, ...] # # 这些位置会被 computeZeroRegions() 用来找 zero-coverage 区间
     # create an empty list of lists
     trans = [[] for x in xrange(len(bamFile.lengths))]
     try:
@@ -128,7 +134,7 @@ def computeStartingPos(xprsResults, bamFile):
             read = bamFile.next()
             if read.tid != -1:
                 # trans[read.tid].append(read.qstart)
-                trans[read.tid].append(read.pos)
+                trans[read.tid].append(read.pos) ## read.pos = read 在 reference 上的起始位置 # 这里收集所有 read 的起始位置
     except StopIteration:
         pass
 
@@ -137,6 +143,7 @@ def computeStartingPos(xprsResults, bamFile):
 # faster than its counterpart
 def computeStartingPos2(xprsResults, bamFile):
     # create an empty list of lists
+    ## trans 是一个列表，每个元素是一个 dict # trans[tid] = { startPos : count } # 用来统计每条 reference（染色体）上每个 read 起始位置出现的次数
     trans = [{} for x in xrange(len(bamFile.lengths))]
     try:
         while True:
@@ -145,6 +152,7 @@ def computeStartingPos2(xprsResults, bamFile):
                 # read.pos += 1 # make it 1 based
                 startPos = read.pos + 1 # make it 1 based
                 if read.is_reverse:
+                    ## 如果 read 是反向链，则起始位置应该是 read 的末端
                     startPos = startPos + read.rlen - 1
                 if startPos in trans[read.tid]:
                     trans[read.tid][startPos] += 1
@@ -160,11 +168,12 @@ def computeTests(trans, xprsResults, bamFile):
     ntrans = len(trans)
     tests = [None] * ntrans
     for i in xrange(ntrans):
-        t = trans[i]
+        t = trans[i] ## 第 i 条 reference 的起始位置 dict
         curTest = None
         if i % 50 == 0:
             status_bar(i, ntrans, 50)
         if bamFile.getrname(i) in xprsResults:
+            ## 如果该 reference 在 eXpress 结果中有表达量 # 则对该 reference 计算 zero-coverage 区间
             curTest = computeZeroRegions(t, xprsResults[ bamFile.getrname(i) ])
         tests[i] = curTest
     print # clear the screen
@@ -180,6 +189,7 @@ def printRegions(tests, outHandle, bamFile):
         status_bar(tid, len(tests), 50)
         target = bamFile.getrname(tid)
         for (range, p) in zip(tests[tid][0], tests[tid][1]):
+            ## tests[tid][0] = zero-region 列表 # tests[tid][1] = 对应的 log 概率列表
             outLine = target + "\t" + str(range[0]) + "\t" + str(range[1]) + "\t" + str(p) + "\n"
             outHandle.write(outLine)
     print
@@ -189,6 +199,7 @@ def main():
     # read xprs data -- returns dict with fpkm
     xprsFName = sys.argv[1]
     print_log("Reading file " + xprsFName)
+    ## 读取 eXpress 的 results.xprs 文件 # 返回一个 dict：target_id → rate（不是 TPM，是 expected_count / effective_length） # 用于后续 zero-region 的 Poisson rate
     xprsResults = readXprs(xprsFName, "fpkm")
 
     # read bam header -- returns hash with count array
@@ -198,14 +209,14 @@ def main():
     samFile = pysam.Samfile(samFName, "rb")
 
     print_log("Compute the number of reads starting at each position in the transcriptome")
-    trans = computeStartingPos2(xprsResults, samFile)
+    trans = computeStartingPos2(xprsResults, samFile) ## 统计每条 reference（染色体）上每个 read 的起始位置 # trans 是一个列表：每个元素是 {start_pos : count}
 
     print_log("Computing Pr[zero region]")
-    tests = computeTests(trans, xprsResults, samFile)
+    tests = computeTests(trans, xprsResults, samFile) ## 对每条 reference 计算 zero-coverage 区间 # 前提：该 reference 在 xprsResults 中有表达量 # tests[i] = (ranges, log_ps) 或 None
 
     outHandle = open(sys.argv[3], "w")
     print_log("Printing...")
-    printRegions( tests, outHandle, samFile )
+    printRegions( tests, outHandle, samFile ) ## 输出 zero-region 结果到文件 # 格式：reference start end pvalue
     outHandle.close()
 
     samFile.close()
