@@ -103,28 +103,38 @@ class Transcript(object):
         a given transcript, it will not be included for the output.
 
         """
-
+        # exon 是一个二元组 (start, end)，使用 0-based, right-exclusive 坐标 
+        # 这里检查 start 是否大于 end，如果是，说明 GTF 注释本身有错误
         if exon[0] > exon[1]:
             raise Exception(
                 "Invalid exon start/stop in transcript: " + \
                         str(self.transcript_id))
-
+            
+        # 检查是否出现“紧挨着”的 exon： 
+        # 如果上一个 exon 的 end == 新 exon 的 start， 
+        # 说明 GTF 把一个 exon 拆成两段（无意义的分裂）
         if exon[0] == self._furthest_added_exon:
             raise Exception( 'Non-sensical exons. ' + \
                     'One begins right after the other ends.' +  \
                     ' This should all be one exon: {0}'.format( self ) )
-
+            
+        # 如果这是第一个 exon（_furthest_added_exon is None） 
+        # 或者新 exon 的 start > 上一个 exon 的 end， 
+        # 说明 exon 是按顺序添加的，可以直接 append
         # Add an exon to the end (i.e. exons are in order)
         if self._furthest_added_exon < exon[0] or \
                 self._furthest_added_exon is None:
             self.exons += [exon]
             self._furthest_added_exon = exon[1]
             return
-
+                    
+        # 如果不是按顺序添加，需要检查是否与已有 exon 重叠 # 重叠判断条件：两个区间有交集
         for e in self.exons:
             if (e[1] >= exon[0]) and (exon[1] >= e[0]):
                 raise Exception(
                     "Overlapping exon in transcript: " + str(self.transcript_id))
+
+        # 如果不重叠，但顺序不对，则需要插入到正确的位置 # 使用 bisect_left 保持 exons 列表按坐标排序
         # Add an exon elsewhere, to keep exons sorted
         index = bisect_left( self.exons, exon )
         self.exons.insert(index, exon)
@@ -155,6 +165,10 @@ class Transcript(object):
         return None
 
     def to_gtf(self):
+        """
+        将当前 transcript 的 exon 列表转换成 GTF 格式的字符串。
+        每个 exon 输出一行 GTF。
+        """
         if len(self.exons) == 0:
             raise Exception( 'Cannot print to GTF if no exons' )
         trans_str = []
@@ -190,6 +204,7 @@ class Transcript(object):
         return self.__str__()
 
     def __str__(self):
+        #返回一个简短的字符串表示 transcript：transcript_id:chrom:start-end
         return '{0}:{1}:{2}-{3}'.format(
             self.transcript_id,
             self.refname,
@@ -213,9 +228,9 @@ def gtf_parse(input_gtf):
     for line in gtf_file:
 
         if line.startswith('#'):
-            continue
+            continue #跳过‘#’的注释行
 
-        gtf_line = (line.split("\t"))
+        gtf_line = (line.split("\t")) # 按 GTF 的 9 列切分
 
         if len(gtf_line) < 9 or gtf_line[2] != "exon":
             continue
@@ -256,13 +271,13 @@ def gtf_parse(input_gtf):
                     gtf_line[0],
                     gtf_line[6],
                     gtf_line[7],
-                    gtf_line[8].split(" ")[3],
+                    gtf_line[8].split(" ")[3], #这步好像解析错误
                     gene_id,
                     gtf_line[5],
                     gtf_line[1])
                 transcript_dictionary[transcript_id] = current_transcript
                 transcript_dictionary[transcript_id].add_exon(
-                    ( int(gtf_line[3]) - 1, int(gtf_line[4]) ) )
+                    ( int(gtf_line[3]) - 1, int(gtf_line[4]) ) ) #GTF 的 start 要减 1，就是因为生物学坐标体系从 1 开始，而计算机数组从 0 开始。
             except IndexError as i:
                 print >> sys.stderr, "GTF File Input missing fields"
             except Exception as e:
