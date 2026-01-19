@@ -31,7 +31,7 @@ from pyfasta import Fasta
 def bed_to_introns(bed_in, fasta_in, fasta_out):
     logging.info("Opening FASTA: {0}".format(fasta_in))
     logging.info("Note: will take a while the first time it is opened.")
-    fasta = Fasta(fasta_in, key_fn = lambda key: key.split()[0])
+    fasta = Fasta(fasta_in, key_fn = lambda key: key.split()[0]) ## 使用 pyfaidx.Fasta 加载 FASTA # key_fn=lambda key: key.split()[0] 用于处理 FASTA header 中可能包含空格的情况
 
     bed_h = open(bed_in, 'r')
 
@@ -42,7 +42,7 @@ def bed_to_introns(bed_in, fasta_in, fasta_out):
         if count % 10000 == 0 and count > 0:
             logging.info("On intron: {0}".format(count))
         ref, start, stop, genename = line.split()
-        key = ref + ':' + start + '-' + stop
+        key = ref + ':' + start + '-' + stop ## 构造唯一 key（用于去重）
         if key in all_keys:
             logging.warning("ERROR: {0} appears once already".format(key))
             continue
@@ -56,7 +56,7 @@ def bed_to_introns(bed_in, fasta_in, fasta_out):
         if len(seq) == 0:
             logging.warning("Intron length is 0? {0}:{1}-{2}".format(ref, start, stop))
             continue
-        record = SeqRecord(Seq(seq), key, '', '')
+        record = SeqRecord(Seq(seq), key, '', '') ## 构造 Biopython 的 SeqRecord 对象 # key 用作 FASTA header
         output_seq.append(record)
         count += 1
 
