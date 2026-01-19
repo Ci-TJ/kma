@@ -428,14 +428,19 @@ class IntronCoverage:
 
 def junction_support( ps_handle, ref, intron, read_len ):
     # TODO: test me
+    ## 功能：计算 intron 左右两侧 splice junction 的支持 read 数 # # ps_handle: pysam.AlignmentFile 对象（BAM 文件句柄） 
+    # ref: 染色体名称 # intron: (start, end) 坐标 # read_len: read 长度（用于定义窗口大小）
 
     left_start = (intron[0] - 1) - read_len + 1
     left_end = (intron[0] - 1) + read_len - 2
 
     try:
+        ## 遍历 BAM 中落在左侧窗口的 reads # read.overlap(a,b) 返回 read 在区间 [a,b] 的重叠长度 # read.rlen 是 read 的总长度 
+        # # 条件：read.rlen == read.overlap(...) # 意味着 read 完整覆盖窗口（即 read 完全跨越 splice junction）
         left_count = sum(read.rlen == read.overlap(left_start, left_end)
                 for read in ps_handle.fetch(ref, left_start, left_end))
     except ValueError:
+        ## 如果窗口越界（负坐标），直接返回 0
         return (0, 0)
 
     right_start = (intron[1] - 1) - read_len + 2
@@ -450,10 +455,15 @@ def junction_support( ps_handle, ref, intron, read_len ):
 
 def compute_coverage( ps_handle, ref, intron, read_len ):
     # TODO: test me
+    ## 功能：计算 intron 区域的覆盖度（coverage） 
+    # # 覆盖度定义为： # 覆盖 intron 扩展区间的“完整覆盖 read 数” / 区间长度 
+    # # ps_handle: pysam.AlignmentFile（BAM 文件句柄） # ref: 染色体名称 # intron: (start, end) 坐标 # read_len: read 长度，用于定义扩展窗口
     left_start = intron[0] - read_len + 1
     right_end = (intron[1] - 1) + read_len - 1
 
     try:
+        ## 遍历 BAM 中落在 [left_start, right_end] 的 reads # # 条件 1：read.rlen == read.overlap(left_start, right_end) # → read 必须完整覆盖整个窗口 
+        # # 条件 2：(read.aend - read.pos) == read.rlen # → read 没有 soft-clip / indel，是真正的全长匹配 # # 满足两个条件的 read 才计数
         count = sum(read.rlen == read.overlap(left_start, right_end) and
                     (read.aend - read.pos) == read.rlen for read in
                     ps_handle.fetch(ref, left_start, right_end))
@@ -467,6 +477,9 @@ def compute_coverage( ps_handle, ref, intron, read_len ):
 #
 def bam_to_measurable(bam_fname, gene_to_trans, gene_to_introns):
     # TODO: test me
+    ## 功能： # 给定 BAM 文件、gene→transcript 映射、gene→introns 映射， 
+    # 计算每个 intron 的 coverage 和 junction support， 
+    # 并返回： # 1. 每个基因覆盖度最高的 intron # 2. 每个基因所有 intron 的测量结果（IntronCoverage 对象）
 
     bam_handle = pysam.Samfile(bam_fname, 'rb')
     tmp = bam_handle.next()
@@ -486,10 +499,11 @@ def bam_to_measurable(bam_fname, gene_to_trans, gene_to_introns):
         ref = gene_to_trans[gene_name][0].refname
         for intron in all_introns:
             cur_cov = None
-            junc_supp = junction_support(bam_handle, ref, intron, read_len)
+            junc_supp = junction_support(bam_handle, ref, intron, read_len) ## 计算左右剪接点支持度（left_count, right_count）
             cov = compute_coverage(bam_handle, ref, intron, read_len)
             cur_cov = IntronCoverage(ref, intron, cov, junc_supp)
 
+            ## 更新最大覆盖度 intron
             if cov > max_cov:
                 max_intron = cur_cov
                 max_cov = cov
@@ -502,6 +516,7 @@ def bam_to_measurable(bam_fname, gene_to_trans, gene_to_introns):
             # else:
             #     cur_cov = IntronCoverage(ref, intron)
 
+        ## 保存该基因的最大 intron 和所有 intron
         gene_to_max_introns[ gene_name ] = max_intron
         gene_to_measurable_introns[ gene_name ] = measurable_introns
 
@@ -510,6 +525,11 @@ def bam_to_measurable(bam_fname, gene_to_trans, gene_to_introns):
     return (gene_to_max_introns, gene_to_measurable_introns)
 
 def print_measurable(gene2trans, gene2intersect, gene2max, gene2measurable, handle):
+    """
+    把每个基因的所有 intron 的测量结果（coverage + junction support）打印成一张表。
+    gene    reference   start   end   coverage   support_start   support_end   transcripts
+    ENSG000001   chr1   1000   1200   0.03   5   3   ENST00001,ENST00002
+    """
     print >> handle, 'gene\treference\tstart\tend\tcoverage\tsupport_start\tsupport_end\ttranscripts'
     for gene in gene2max:
         for measurable in gene2measurable[gene]:
