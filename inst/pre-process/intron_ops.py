@@ -162,6 +162,7 @@ def transcript_union(trans_list):
 
     exon_union = []
     candidate = all_exons[0]
+    ## 从第二个 exon 开始遍历
     for it in xrange(1, len(all_exons)):
         cur_exon = all_exons[it]
         if candidate[1] < cur_exon[1] and cur_exon[0] < candidate[1]:
@@ -174,6 +175,7 @@ def transcript_union(trans_list):
                 candidate = cur_exon
     exon_union.append(candidate)
 
+    ## 构造一个新的 Transcript 对象，作为 union transcript
     t0 = trans_list[0]
     strand = '-' if t0.is_reverse else '+'
     t = Transcript(t0.gene_id,
@@ -192,8 +194,36 @@ def intron_trans_compat(intron_list, trans_list):
     """ Under the assumption that the intron_list is derived from the
     union gene from the trans_list, returns a dictionary where intron =>
     list of transcript ids that it is compatible with """
+    
+    """
+    intron_list
+    [
+      Intron(refname="chr1", start=12227, end=12612),
+      Intron(refname="chr1", start=12721, end=13220),
+      ...
+    ]
 
-    intron_to_trans = {}
+    trans_list:
+    [
+      Transcript(
+          transcript_id="ENST00000456328.2",
+          refname="chr1",
+          front_coordinate=11868,
+          end_coordinate=14409,
+          exons=[(11868,12227),(12612,12721),(13220,14409)]
+      ),
+      Transcript(
+          transcript_id="ENST00000450305.2",
+          refname="chr1",
+          front_coordinate=12010,
+          end_coordinate=13670,
+          exons=[(12010,12057),(12179,12227),(12612,12721)]
+      ),
+      ...
+    ]
+    """
+    
+    intron_to_trans = {} ## 判断 transcript 是否覆盖 intron # 条件 1：trans 起点 < intron 起点 # 条件 2：trans 终点 > intron 终点 # 条件 3：同一条染色体
     for intron in intron_list:
         key = str(intron)
         for trans in trans_list:
@@ -234,18 +264,27 @@ def discard_overlapping_introns(transcripts, extend = 0):
     """ Given a dictionary which maps from gene_to_union (reduce_to_gene(trans,
     transcript_union)), and gene_to_intron, remove introns that overlap with
     other genes. Side effects: gene_to_introns has an updated set of introns """
-
+    ## 这个函数的目的： # 对每个“重叠的 transcript block”，计算它们的 union transcript， # 再生成 introns，然后删除那些跨越不同基因之间重叠区域的 introns。 
+    # # 换句话说： # 如果两个基因在基因组上重叠，那么它们的 intron 可能跨基因边界， # 这些 intron 是不可信的，需要丢弃。 # # 返回：gene_id → 过滤后的 intron 列表
     gene_to_introns = {}
 
     for overlap_trans in get_overlapping_transcripts( transcripts ):
         # get the gene union then the introns from this union
+        # ------------------------------------------------------------ 
+        # 第一步：对这个簇按 gene 分组，并计算每个 gene 的 union transcript 
+        # ------------------------------------------------------------ 
+        # reduce_to_gene(overlap_trans, transcript_union) # 返回： 
+        # g2t: gene → transcript 列表 # g2u: gene → union transcript（由 transcript_union() 生成）
         g2t, g2u = reduce_to_gene( overlap_trans, transcript_union )
+        ## 第二步：对每个 gene 的 union transcript 生成 intron 列表
         g2i = { gene: get_introns(g_union, extend) for (gene, g_union) in \
                g2u.iteritems() }
 
+        ## 第三步：把所有 gene 的 union transcript 按坐标排序 # 用于后面检测基因之间的重叠区间
         t_unions = sorted(g2u.values(), key = lambda x: (x.front_coordinate,
                               x.end_coordinate))
         intersection = []
+        ## 第四步：找出所有 union transcript 之间的重叠区间
         for j in xrange(len(t_unions)):
             for k in xrange(j + 1, len(t_unions)):
                 if t_unions[k].front_coordinate < t_unions[j].end_coordinate:
@@ -264,6 +303,7 @@ def discard_overlapping_introns(transcripts, extend = 0):
 
         # we have a list of intersection regions, now need to find introns
         # that cross intersection
+        ## 第五步：把所有重叠区间合并（unionize） # 例如 [(100,150),(120,180)] → [(100,180)]
         for cur_gene in t_unions:
             valid_introns = []
             for intron in g2i[cur_gene.gene_id]:
@@ -307,6 +347,7 @@ def unionize_regions(regions):
 def intron_all_junction_left(trans_list):
     """ Given a list of transcripts, return a sorted list of intronic regions
     that every transcript shares. """
+    ## 输入：多个 transcript # 输出：所有 transcript 共同拥有的 intron 左侧交集区域 # # 注意：这是“左侧 junction 兼容 intron”，不是完整 intron 交集 # 逻辑非常 ad-hoc，作者自己也承认不准确。
 
     if len(trans_list) == 0:
         return []
@@ -319,7 +360,7 @@ def intron_all_junction_left(trans_list):
     if len(all_introns) == 1:
         return all_introns
 
-    # TODO: get the union of all introns and see if it still works -- should be
+    # TODO: get the union of all introns and see if it still works -- should be ### 作者承认：应该先做 intron union 再求交集，但他没做！！！
     # more accurate
 
     candidates_l = all_introns[0]
@@ -333,20 +374,25 @@ def intron_all_junction_left(trans_list):
             for j in xrange(c_start, len(candidates_l)):
                 cand = candidates_l[j]
                 intersection = intron_intersection(intron, cand)
+                ## 情况 1：两个 intron 左端点相同
                 if intron[0] == cand[0]:
                     candidates_l[j] = intersection
                     c_start += 1
+                ## 情况 2：有重叠，但左端点不同
                 elif intersection is not None:
+                    ## 如果当前 transcript 的起点在 cand 内部 # 缩短 cand 的右端，使其左侧对齐
                     if trans_list[i].front_coordinate > cand[0]:
                         candidates_l[j] = (cand[0],
                                            trans_list[i].front_coordinate)
                     else:
                         mark_for_removal.append(j)
+                ## 情况 3：intron 覆盖 cand 的左端点（左侧 intron 更大）# 这种情况不应该从左侧包含 → 删除 cand
                 elif intron[0] < cand[0] and intron[1] > cand[0]:
                     # there is an overlap from an intron further on the left
                     # side. shouldn't include it from the left side but from the
                     # right
                     mark_for_removal.append(j)
+                ## 情况 4：cand 完全在 intron 右侧 → 后面不会再有重叠
                 elif cand[0] > intron[1]:
                     break
 
