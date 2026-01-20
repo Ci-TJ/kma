@@ -203,22 +203,30 @@ newIntronRetention <- function(targetExpression,
 #' @export
 melt_retention <- function(ret, num, denom, groupings)
 {
+    # ret：intron × sample 的 retention（PSI/IR） 
+    # num：intron × sample 的 numerator # denom：intron × sample 的 denominator 
+    # groupings：每个 sample 对应的 condition（与列顺序一致） 
+    # 构建 sample → condition 的映射表，用于最后合并
     samp_to_condition <- data.frame(sample = colnames(ret),
         condition = groupings, stringsAsFactors = FALSE)
 
+    ## 把行名（intron 名）变成一列，便于 melt
     ret <- ret %>% mutate(intron = rownames(ret))
 
+    ## 把 retention 宽表（每列一个 sample）转成长表 # 每行变成：intron, sample, retention
     ret <- reshape2::melt(ret, id.vars = "intron",
         variable.name = "sample",
         value.name = "retention") %>%
-        mutate(sample = as.character(sample))
+        mutate(sample = as.character(sample)) ## 避免 factor
 
+    ## 同样处理 denominator
     denom <- denom %>% mutate(intron = rownames(denom))
     denom <- reshape2::melt(denom, id.vars = "intron",
         variable.name = "sample",
         value.name = "denominator") %>%
         mutate(sample = as.character(sample))
 
+    ## 同样处理 numerator
     num <- num %>% mutate(intron = rownames(num))
     num <- melt(num, id.vars = "intron",
         variable.name = "sample",
@@ -242,12 +250,15 @@ melt_retention <- function(ret, num, denom, groupings)
 #' @export
 retentionTestSingleCond <- function(retentionMat, level = 0.0, offset = 0.00)
 {
-    stopifnot(ncol(retentionMat) > 1)
-    m <- apply(retentionMat, 1, mean)
-    v <- apply(retentionMat, 1, var)
-    v <- v + offset
-    testStat <- (m - level) / sqrt(v)
-    list(avg = m, variance = v, testStat = testStat)
+    # retentionMat：一个矩阵，行是 intron，列是样本（同一 condition） 
+    # 这是“单条件检验”，即不比较两个条件，只测试 retention 是否显著高于某个水平 level
+    
+    stopifnot(ncol(retentionMat) > 1) ## 至少需要两个样本，否则无法估计方差
+    m <- apply(retentionMat, 1, mean) ## 每个 intron 的平均 retention（跨样本）
+    v <- apply(retentionMat, 1, var) ## 每个 intron 的 retention 方差
+    v <- v + offset ## 加一个 offset，避免方差为 0 时除以 0 # offset 默认 0，但用户可以设为一个小值（如 1e-6）
+    testStat <- (m - level) / sqrt(v) ## 类似 z-score：测试平均 retention 是否显著高于 level # level 默认 0，相当于测试“是否显著大于 0
+    list(avg = m, variance = v, testStat = testStat) ## 返回每个 intron 的均值、方差、检验统计量
 }
 
 #' Get intron lengths from an identifier
@@ -259,6 +270,7 @@ retentionTestSingleCond <- function(retentionMat, level = 0.0, offset = 0.00)
 #' @export
 intron_length <- function(intron_names)
 {
+    # intron_names 形如 "chr1:1000-1200" # 目标：返回长度 = 1200 - 1000 = 200
     unlist(lapply(strsplit(intron_names, ":"), function(x)
         {
             coords <- as.integer(strsplit(x[2], '-')[[1]])
@@ -269,27 +281,33 @@ intron_length <- function(intron_names)
 #' Generate the null distribution
 #'
 #'
-#' @param flat_grouped
-#' @param n_samp number of samples
-#' @param test_stat test statistic to use (function)
-#' @return a numeric with means
+#' @param flat_grouped #一个 data.frame，包含 intron、sample、retention #通常是某个 condition 下的所有样本
+#' @param n_samp number of samples #bootstrap 次数
+#' @param test_stat test statistic to use (function) #用于计算统计量的函数（默认 mean）
+#' @return a numeric with means #一个 list，包含 bootstrap 样本的统计量分布和其 ECDF
 #' @export
 intron_null_dist <- function(flat_grouped, n_samp = 10000, test_stat = mean)
 {
+    ## 将 long-format 转成 wide-format： # 每行一个 intron，每列一个 sample，值为 retention
     all_dat <- dcast(flat_grouped, intron ~ sample, value.var = "retention")
-    all_dat <- select(all_dat, -c(intron))
-    all_dat <- all_dat[complete.cases(all_dat),]
+    all_dat <- select(all_dat, -c(intron)) ## 去掉 intron 列，只保留 retention 数值矩阵
+    all_dat <- all_dat[complete.cases(all_dat),] ## 去掉含 NA 的行（需要完整数据才能 bootstrap）
 
+    ## 对每一列（每个 sample）做 bootstrap： # sample(x, n_samp, replace=TRUE) → 从该 sample 的 retention 分布中重采样 n_samp 次
     samps <- as.matrix(as.data.frame(lapply(all_dat, sample,
                 n_samp,
-                replace = T)))
+                replace = T))) ## samps 的维度是：n_samp × n_samples
 
-    data <- apply(samps, 1, test_stat)
+    data <- apply(samps, 1, test_stat) ## 对每一行（一次 bootstrap）计算统计量（默认 mean）
 
-    list(data = data, ecdf = ecdf(data))
+    list(data = data, ecdf = ecdf(data)) ## 返回 bootstrap 分布和其经验分布函数 ECDF
 }
 
 #' @export
+## 计算 p-value 的核心函数 # mean_val：某个 intron 在某个 condition 下的平均 retention（观测值） 
+#null_ecdf：由 bootstrap 得到的 null 分布的经验分布函数 ECDF # ECDF(x) = P(null_sample <= x) 
+# 因此 1 - ECDF(mean_val) = P(null_sample > mean_val) 
+# 这是一个右尾检验：观测值越大，p-value 越小 1 - null_ecdf(mean_val)
 intron_pval <- function(mean_val, null_ecdf)
 {
     1 - null_ecdf(mean_val)
@@ -316,11 +334,17 @@ print.IntronRetention <- function(ir)
 add_gene_names <- function(dat, ir)
 {
     # TODO: ensure "intron" exists in dat
-
+    ## 将 intron 对应的基因名（gene）和 intron_extension 信息加入 dat 
+    # dat：任意包含 intron 列的数据框 
+    # ir：IntronRetention 对象，包含 intron_to_ext（intron → gene, intron_extension） 
+    
+    # 记录原始行数，用于 join 后检查是否发生重复或丢失
     nrow_before <- nrow(dat)
+    ## 把 ir$intron_to_ext（包含 intron, intron_extension, extension_len, gene） # 按 intron 合并到 dat 中
     dat <- data.table(dat) %>%
         left_join(data.table(ir$intron_to_ext), by = "intron")
-
+    
+    ## 合并后再次检查行数是否一致 # 如果不一致，说明 join 过程中出现重复或丢失，这是不允许的
     nrow_after <- nrow(dat)
     stopifnot(nrow_before == nrow_after)
 
