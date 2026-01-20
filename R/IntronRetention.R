@@ -42,9 +42,12 @@ newIntronRetention <- function(targetExpression,
     unique_counts = NULL,
     psi = TRUE)
 {
+    # targetExpression：每一行是一个 target_id（转录本或 intron_extension），列是样本表达量 # intronToUnion：每一行是 intron 与兼容的 target_id 的对应关系 
+    # groups：每个样本对应的 condition # unique_counts：可选，来自 eXpress 的 unique fragment 数 
+    # psi：是否把 intron_extension 当作一个“伪转录本”加入表达矩阵，用于计算 PSI
     # TODO: verify all 'introns' are in targetExpression and all target_ids in
     # targetExpression
-    labs <- setdiff(colnames(targetExpression), 'target_id')
+    labs <- setdiff(colnames(targetExpression), 'target_id') ## labs = 所有样本名（target_id 除外）
 
     if (length(groups) != length(labs)) {
         stop("length(groups) must be the same as the number of experiments included (and also in the same order)")
@@ -58,29 +61,33 @@ newIntronRetention <- function(targetExpression,
     intronToUnion <- intronToUnion %>%
         arrange(target_id)
 
-
+    ## 如果 psi=TRUE，则把 intron_extension 当作一个新的 target_id 加入 # 这是 KMA 的关键：把 intron 本身当作一个“转录本”来量化
     if (psi) {
         repIntrons <- intronToUnion %>%
             select(intron, gene, intron_extension) %>%
             distinct() %>%
-            mutate(target_id = intron_extension)
+            mutate(target_id = intron_extension) ## 每个 intron 只保留一条 mutate(target_id = intron_extension) # intron_extension 作为 target_id
         intronToUnion <- data.table(dplyr::bind_rows(intronToUnion, repIntrons))
     }
-
+    
     unique_counts_tbl <- NULL
 
+    ## 如果提供 unique_counts，则需要把它 melt 成 long format，并映射到 intron
     if (!is.null(unique_counts)) {
         # TODO: verify column names are exactly the same as in targ_expression
         cat("'melting' unique counts\n")
+        ## intron_extension → target_id，用于和 unique_counts 对齐
         intron_targ_tbl <- intronToUnion %>%
             select(intron, intron_extension) %>%
             distinct() %>%
             rename(target_id = intron_extension)
+        ## unique_counts 原本是宽表（每列一个样本），这里 melt 成 long
         unique_counts_tbl <- melt(unique_counts, id.vars = "target_id",
             variable.name = "sample",
             value.name = "unique_counts")
 
         # return(list(unique_counts = unique_counts_tbl, intron_targ = intron_targ_tbl))
+        ## 把 unique_counts 映射到 intron
         unique_counts_tbl <- data.table(unique_counts_tbl) %>%
             inner_join(data.table(intron_targ_tbl), by = c("target_id")) %>%
             select(-c(target_id)) # %>%
@@ -91,6 +98,7 @@ newIntronRetention <- function(targetExpression,
     cat("computing denominator\n")
     intronToUnion <- data.table(intronToUnion)
     targetExpression <- data.table(targetExpression)
+    ## denomExp：每个 intron 的 denominator（所有兼容转录本表达量之和）
     denomExp <- left_join(intronToUnion, targetExpression, by = "target_id") %>%
         group_by(intron) %>%
         select(-(target_id)) %>%
@@ -100,20 +108,23 @@ newIntronRetention <- function(targetExpression,
         left_join(
             select(intronToUnion, intron, intron_extension) %>%
                 distinct(),
-            by = c("intron"))
+            by = c("intron")) ## target_id 不再需要# gene 和 intron_extension 不参与求和# 把 intron_extension 加回来
 
+    ## tmp_targExpression：把 target_id 改名为 intron_extension，用于 numerator 计算
     tmp_targExpression <- targetExpression %>%
         rename("intron_extension" = target_id) %>%
         data.table()
 
     denomExp <- data.table(denomExp)
     cat("computing numerator\n")
+    ## numerator：每个 intron_extension 对应的表达量（即 intron 本身的表达）
     numExp <- select(denomExp, intron, intron_extension) %>%
         # inner_join(targetExpression, by = c("intron_extension" = "target_id")) %>%
         inner_join(tmp_targExpression, by = c("intron_extension")) %>%
         arrange(intron_extension)
     rm(tmp_targExpression)
 
+    ## denomExp 和 numExp 转为矩阵形式，行名为 intron
     denomExp <- as.data.frame(denomExp) %>%
         arrange(intron)
     rownames(denomExp) <- denomExp$intron
@@ -124,18 +135,21 @@ newIntronRetention <- function(targetExpression,
     rownames(numExp) <- numExp$intron
     numExp <- select(numExp, -c(intron, intron_extension))
 
-    cat("computing retention\n")
-    retentionExp <- numExp / denomExp
+    cat("computing retention\n") 
+    retentionExp <- numExp / denomExp ## retention = numerator / denominator
 
+    ## targetExpression 也去掉 target_id 列，行名设为 target_id
     rownames(targetExpression) <- targetExpression$target_id
     targetExpression$target_id <- NULL
 
     # TODO: include intron_extension in flat
     cat("'melting' expression\n")
+    ## flat：长格式表，每行是 intron × sample
     flat <- melt_retention(retentionExp, numExp, denomExp, groups)
 
     flat <- data.table(flat)
 
+    ## 如果有 unique_counts，则加入 flat
     if (!is.null(unique_counts)) {
         cat("joining unique_counts and retention data\n")
         flat <- flat %>%
@@ -147,22 +161,23 @@ newIntronRetention <- function(targetExpression,
         arrange(intron, condition) %>%
         group_by(intron, condition)
 
-
+    ## intron_to_ext：每个 intron 的 intron_extension 及其长度
     intron_to_ext <- intronToUnion %>%
         select(intron, intron_extension) %>%
         distinct() %>%
         mutate(extension_len = intron_length(intron_extension))
-
+    ## intron_to_gene：每个 intron 的 gene
     intron_to_gene <- intronToUnion %>%
         select(intron, gene) %>%
         distinct() %>%
         data.table()
-
+    ## 合并 gene 信息
     intron_to_ext <- intron_to_ext %>%
         left_join(intron_to_gene, by = c("intron"))
 
     # TODO: add a list "filters" which keeps track of all the filters and their
     # calls
+    ## 最终把所有对象转为 data.frame 并打包成 IntronRetention 对象
     retentionExp <- as.data.frame(retentionExp, stringsAsFactors = FALSE)
     numExp <- as.data.frame(numExp, stringsAsFactors = FALSE)
     denomExp <- as.data.frame(denomExp, stringsAsFactors = FALSE)
@@ -171,16 +186,16 @@ newIntronRetention <- function(targetExpression,
     intron_to_ext <- as.data.frame(intron_to_ext, stringsAsFactors = FALSE)
     intronToUnion <- as.data.frame(intronToUnion, stringsAsFactors = FALSE)
 
-    structure(list(retention = retentionExp,
-            numerator = numExp,
-            denominator = denomExp,
-            labels = labs,
-            groups = groups,
-            features = targetExpression,
-            flat = flat,
-            unique_counts = unique_counts,
-            intron_to_extension = intron_to_ext,
-            intron_to_union = intronToUnion
+    structure(list(retention = retentionExp,         # intron × sample 的 IR/PSI
+            numerator = numExp,                      # numerator
+            denominator = denomExp,                  # denominator
+            labels = labs,                           # 样本名
+            groups = groups,                         # condition
+            features = targetExpression,             # 原始表达矩阵
+            flat = flat,                             # 长格式表
+            unique_counts = unique_counts,           # unique fragment 数
+            intron_to_extension = intron_to_ext,     # intron → intron_extension
+            intron_to_union = intronToUnion          # intron → target_id 映射
             ),
         class = "IntronRetention")
 }
